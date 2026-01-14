@@ -5,11 +5,9 @@
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/vandernorth/one2track",
-  "homekit": {},
+  "integration_type": "device",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/vandernorth/one2track/issues",
   "requirements": [],
-  "ssdp": [],
-  "version": "1.0.3",
-  "zeroconf": []
+  "version": "2.0.0"
 }

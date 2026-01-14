@@ -1,3 +1,7 @@
 {
-  "name": "One2Track tracking devices"
+  "name": "One2Track GPS Watch Tracker",
+  "render_readme": true,
+  "content_in_root": false,
+  "filename": "one2track",
+  "hacs": "2.0.0"
 }

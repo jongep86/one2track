@@ -1,237 +1,187 @@
-import logging
-from datetime import timedelta, datetime
-from typing import List
+"""Device tracker platform for One2Track integration."""
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-import async_timeout
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.components.zone import async_active_zone
-from homeassistant.components.device_tracker.config_entry import TrackerEntity
-from homeassistant.core import callback
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-    UpdateFailed,
-)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .client import GpsClient, TrackerDevice
-from .common import (
-    DOMAIN, DEFAULT_UPDATE_RATE_MIN
-)
+from .const import DOMAIN, LOGGER
+from .entity import One2TrackEntity
 
-LOGGER = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from .client.client_types import TrackerDevice
+    from .models import One2TrackData
 
 
 async def async_setup_entry(
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Add an entry."""
-    # Add the needed sensors to hass
-    LOGGER.debug("one2track async_setup_entry")
+    """Set up One2Track device tracker from a config entry."""
+    LOGGER.debug("Setting up One2Track device tracker platform")
 
-    gps_api: GpsClient = hass.data[DOMAIN][entry.entry_id]['api_client']
-    devices: List[TrackerDevice] = await gps_api.update()
+    runtime_data: One2TrackData = entry.runtime_data
+    coordinator = runtime_data.coordinator
 
-    coordinator = GpsCoordinator(hass, gps_api, True)
+    # Wait for first update to complete
+    if not coordinator.data:
+        LOGGER.warning("No data available from coordinator yet")
+        return
 
-    LOGGER.info("Adding %s found one2track devices", len(devices))
+    # Create tracker entities for all devices
+    entities = [
+        One2TrackDeviceTracker(coordinator, device["uuid"])
+        for device in coordinator.data
+    ]
 
-    for device in devices:
-        LOGGER.debug("Adding %s", device)
-        async_add_entities(
-            [
-                One2TrackSensor(
-                    coordinator,
-                    hass,
-                    entry,
-                    device
-                )
-            ],
-            update_before_add=True,
-        )
-
-    LOGGER.debug("Done adding all trackers.")
+    LOGGER.info("Adding %s One2Track device tracker(s)", len(entities))
+    async_add_entities(entities, update_before_add=False)
 
 
-class GpsCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass, gps_api: GpsClient, first_boot):
-        super().__init__(
-            hass,
-            LOGGER,
-            # Name of the data. For logging purposes.
-            name="One2Track",
-            # Polling interval. Will only be polled if there are subscribers.
-            update_interval=timedelta(minutes=DEFAULT_UPDATE_RATE_MIN),
-            always_update=False
-        )
-        self.gps_api = gps_api
-        self.first_boot = first_boot
-        self.last_update = None
+class One2TrackDeviceTracker(One2TrackEntity, TrackerEntity):
+    """Representation of a One2Track device tracker."""
 
-    async def _async_update_data(self):
-        """Fetch data from API endpoint."""
-        try:
-            # Note: asyncio.TimeoutError and aiohttp.ClientError are already
-            # handled by the data update coordinator.
-            async with async_timeout.timeout(300):
-                data = await (await self.hass.async_add_executor_job(
-                    self.gps_api.update
-                ))
+    _attr_icon = "mdi:watch-variant"
 
-                LOGGER.debug("Update from the coordinator %s", data)
+    def __init__(self, coordinator, device_uuid: str) -> None:
+        """Initialize the device tracker."""
+        super().__init__(coordinator, device_uuid)
 
-                update = True
-
-                if update or self.first_boot:
-                    LOGGER.debug("Updating sensor data. Last update: %s", self.last_update)
-                    self.last_update = datetime.now()
-                    return data
-                else:
-                    LOGGER.debug("No new data to enter")
-                    return None
-
-        except Exception as err:
-            LOGGER.error("Error in updating updater")
-            LOGGER.error(err)
-            raise UpdateFailed(err)
-
-
-class One2TrackSensor(CoordinatorEntity, TrackerEntity):
-    _device: TrackerDevice
-
-    def __init__(
-            self,
-            coordinator,
-            hass: HomeAssistant,
-            entry: ConfigEntry,
-            device: TrackerDevice
-    ) -> None:
-        super().__init__(coordinator)
-        self._hass = hass
-        self._entry = entry
-        self._device = device
-        self._attr_unique_id = device['uuid']
-        self._attr_name = f"one2track_{device['name']}"
+        # Set entity name from initial device data
+        device = self._get_device_data()
+        if device:
+            self._attr_name = device.get("name", f"Device {device_uuid[:8]}")
 
     @property
-    def name(self):
-        """Return the name of the device."""
-        return self._device['name']
+    def source_type(self) -> SourceType:
+        """Return the source type of the device."""
+        device = self._get_device_data()
+        if device and device.get("last_location", {}).get("location_type") == "WIFI":
+            return SourceType.ROUTER
+        return SourceType.GPS
 
     @property
-    def source_type(self):
-        """Return the source type, eg gps or router, of the device."""
-        return "gps"  # TODO: Could be router when status=WIFI
-
-    def async_device_changed(self):
-        """Send changed data to HA"""
-        LOGGER.debug("%s (%d) advising HA of update", self.name, self.unique_id)
-        self.async_schedule_update_ha_state()
-
-    @property
-    def location_accuracy(self):
-        """Return the gps accuracy of the device. In accuracy in meters"""
-        return 10  # TODO check signal strength
-
-    @property
-    def should_poll(self):
-        return False
-
-    @property
-    def device_info(self):
-        """Return the device_info of the device."""
-        return {
-            "identifiers": {(DOMAIN, self.unique_id)},
-            "serial_number": self._device['serial_number'],
-            "name": self._device['name']
-        }
-
-    @property
-    def icon(self):
-        return "mdi:watch-variant"
-
-    @property
-    def extra_state_attributes(self):
-        """Return device specific attributes."""
-        return {
-            "serial_number": self._device['serial_number'],
-            "uuid": self._device['uuid'],
-            "name": self._device['name'],
-
-            "status": self._device['status'],
-            "phone_number": self._device['phone_number'],
-            "tariff_type": self._device['simcard']['tariff_type'],
-            "balance_cents": self._device['simcard']['balance_cents'],
-
-            "last_communication": self._device['last_location']['last_communication'],
-            "last_location_update": self._device['last_location']['last_location_update'],
-            "altitude": self._device['last_location']['altitude'],
-            "location_type": self._device['last_location']['location_type'],
-            "address": self._device['last_location']['address'],
-            "signal_strength": self._device['last_location']['signal_strength'],
-            "satellite_count": self._device['last_location']['satellite_count'],
-            "host": self._device['last_location']['host'],
-            "port": self._device['last_location']['port'],
-        }
-
-    @property
-    def battery_level(self):
-        """Return battery value of the device."""
-        return self._device["last_location"]["battery_percentage"]
-
-    @property
-    def location_name(self):
-        """Return a location name for the current location of the device."""
-        if self._device["last_location"]["location_type"] == 'WIFI':
-            return 'home'
-
-        try:
-            zone_name = async_active_zone(self._hass, self.latitude, self.longitude, 0)
-            if zone_name:
-                return zone_name.name
-        except Exception as err:
-            LOGGER.error(f"Cannot get zone for tracker: {err}")
-
-        return self._device['last_location']['address']
-
-    @property
-    def latitude(self):
+    def latitude(self) -> float | None:
         """Return latitude value of the device."""
-        return float(self._device['last_location']['latitude'])
+        device = self._get_device_data()
+        if device and "last_location" in device:
+            lat = device["last_location"].get("latitude")
+            if lat is not None:
+                return float(lat)
+        return None
 
     @property
-    def longitude(self):
+    def longitude(self) -> float | None:
         """Return longitude value of the device."""
-        return float(self._device['last_location']['longitude'])
+        device = self._get_device_data()
+        if device and "last_location" in device:
+            lon = device["last_location"].get("longitude")
+            if lon is not None:
+                return float(lon)
+        return None
 
     @property
-    def unique_id(self):
-        """Return the unique ID."""
-        return self._device['uuid']
+    def location_accuracy(self) -> int:
+        """Return the location accuracy in meters."""
+        device = self._get_device_data()
+        if device and "last_location" in device:
+            signal = device["last_location"].get("signal_strength", 0)
+            # Better signal = better accuracy
+            # Signal strength is typically 0-100, map to accuracy in meters
+            if signal > 80:
+                return 5
+            if signal > 50:
+                return 10
+            if signal > 20:
+                return 20
+        return 50  # Default accuracy
 
-    async def async_added_to_hass(self):
-        """Register state update callback."""
-        await super().async_added_to_hass()
+    @property
+    def battery_level(self) -> int | None:
+        """Return the battery level of the device."""
+        device = self._get_device_data()
+        if device and "last_location" in device:
+            return device["last_location"].get("battery_percentage")
+        return None
 
-    async def async_will_remove_from_hass(self):
-        """Clean up after entity before removal."""
-        await super().async_will_remove_from_hass()
+    @property
+    def location_name(self) -> str | None:
+        """Return a location name for the current location of the device."""
+        device = self._get_device_data()
+        if not device:
+            return None
 
-    @callback
-    def _update_from_latest_data(self) -> None:
-        """Update the entity from the latest data."""
-        new_data: List[TrackerDevice] = self.coordinator.data
-        me = next((x for x in new_data if x['uuid'] == self.unique_id), None)
-        if me:
-            self._device = me
-        else:
-            LOGGER.error(f"Tracker {self.unique_id} not found in new data: {new_data}")
+        # If connected to WIFI, assume home
+        if device.get("last_location", {}).get("location_type") == "WIFI":
+            return "home"
+
+        # Check if in a defined zone
+        if self.latitude and self.longitude:
+            try:
+                zone = async_active_zone(
+                    self.hass, self.latitude, self.longitude, radius=0
+                )
+                if zone:
+                    return zone.name
+            except Exception as err:
+                LOGGER.error("Error getting zone for tracker: %s", err)
+
+        # Fallback to address from API
+        return device.get("last_location", {}).get("address")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return device specific attributes."""
+        device = self._get_device_data()
+        if not device:
+            return {}
+
+        last_location = device.get("last_location", {})
+        simcard = device.get("simcard", {})
+
+        return {
+            "device_id": device.get("id"),
+            "serial_number": device.get("serial_number"),
+            "uuid": device.get("uuid"),
+            "name": device.get("name"),
+            "status": device.get("status"),
+            "phone_number": device.get("phone_number"),
+            "tariff_type": simcard.get("tariff_type"),
+            "balance_cents": simcard.get("balance_cents"),
+            "last_communication": last_location.get("last_communication"),
+            "last_location_update": last_location.get("last_location_update"),
+            "altitude": last_location.get("altitude"),
+            "location_type": last_location.get("location_type"),
+            "address": last_location.get("address"),
+            "signal_strength": last_location.get("signal_strength"),
+            "satellite_count": last_location.get("satellite_count"),
+            "host": last_location.get("host"),
+            "port": last_location.get("port"),
+            "speed": last_location.get("speed"),
+        }
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Respond to a DataUpdateCoordinator update."""
-        self._update_from_latest_data()
+        """Handle updated data from the coordinator."""
+        # Get fresh device data
+        device = self._get_device_data()
+
+        if device is None:
+            LOGGER.warning(
+                "Device %s not found in coordinator data", self._device_uuid
+            )
+            return
+
+        # Update entity name if it changed
+        new_name = device.get("name")
+        if new_name and new_name != self._attr_name:
+            self._attr_name = new_name
+
+        # Write state to Home Assistant
         self.async_write_ha_state()

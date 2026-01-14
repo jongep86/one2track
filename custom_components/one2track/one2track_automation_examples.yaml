@@ -1,0 +1,38 @@
+# Voorbeelden van hoe je de One2Track notify service gebruikt
+
+# Simpel bericht sturen
+automation:
+  - alias: "Stuur bericht naar horloge bij thuiskomst"
+    trigger:
+      - platform: zone
+        entity_id: person.papa
+        zone: zone.home
+        event: enter
+    action:
+      - service: notify.one2track_watch
+        data:
+          message: "Papa is thuis!"
+          
+  # Bericht met titel
+  - alias: "Stuur waarschuwing naar horloge"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.front_door
+        to: "on"
+    action:
+      - service: notify.one2track_watch
+        data:
+          title: "Voordeur"
+          message: "De voordeur staat open!"
+          
+  # Bericht naar specifiek device (als je meerdere horloges hebt)
+  - alias: "Stuur naar specifiek horloge"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+    action:
+      - service: notify.one2track_watch
+        data:
+          message: "Tijd om naar school te gaan!"
+          data:
+            device_id: "ABC123"  # vervang met echte device ID

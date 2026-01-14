@@ -1,10 +1,9 @@
 from typing import NamedTuple, TypedDict
 
+from ..exceptions import One2TrackAuthenticationError as AuthenticationError
 
-class AuthenticationError(Exception):
-    """This error is thrown when Authentication fails, which can mean the username/password or domain is incorrect"""
-
-    pass
+# Re-export for backward compatibility
+__all__ = ["AuthenticationError", "One2TrackConfig", "TrackerDevice", "Location", "Simcard"]
 
 
 class One2TrackConfig(NamedTuple):
